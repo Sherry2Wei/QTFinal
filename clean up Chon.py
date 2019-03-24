@@ -17,222 +17,237 @@ def weighted_average(dataframe):
     return (dataframe.ret * dataframe.mcap_lag).sum() / dataframe.mcap_lag.sum()
 
 
-# formatting of msf
-msf = pd.read_csv("msf.csv")
-msf["date"] = pd.to_datetime(msf["date"], format='%Y%m%d')
-msf["date"] = [end_of_month(date) for date in msf["date"]]
-msf.columns = [i.lower() for i in msf.columns]
-msf["month"] = [date.month for date in msf["date"]]
-msf["year"] = [date.year for date in msf["date"]]
-# formatting of mse
-mse = pd.read_csv("mse.csv")
-mse.columns = [i.lower() for i in mse.columns]
-mse["exdt"] = pd.to_datetime(mse["exdt"], format='%Y%m%d')
-mse["dclrdt"] = pd.to_datetime(mse["dclrdt"], format='%Y%m%d')
-mse["paydt"] = pd.to_datetime(mse["paydt"], format='%Y%m%d')
-mse = mse >> mask(X.divamt == X.divamt)
-mse["date"] = [end_of_month(date) for date in mse["exdt"]]
-# import Fama French 4 factors and 5 factors dataset
-ff4 = ft.read_dataframe("ff_four_factor.feather")
-ff4 = ff4.iloc[1:]
-ff4["dt"] = pd.to_datetime(ff4["dt"])
-ff4 = ff4.rename(columns={"dt": "date"})
-ff4["date"] = ff4.agg({"date": [end_of_month]})
-ff4_monthly = ff4.groupby(["date"]).apply(lambda x: pd.Series({"mkt_rf": (x.mkt_rf+1).prod()-1,
-                                                               "smb": (x.SMB+1).prod()-1,
-                                                               "hml": (x.HML+1).prod()-1,
-                                                               "rf": (x.RF+1).prod()-1,
-                                                               "mom": (x.Mom+1).prod()-1}))
-ff4_monthly["ewff"] = (ff4_monthly.mkt_rf + ff4_monthly.smb + ff4_monthly.hml + ff4_monthly.mom)/4
-ff4_monthly.reset_index(inplace=True)
-ff4_monthly = ff4_monthly.assign(cumulative_mkt_rf=np.cumprod(1 + ff4_monthly.mkt_rf),
-                                 cumulative_smb=np.cumprod(1 + ff4_monthly.smb),
-                                 cumulative_hml=np.cumprod(1 + ff4_monthly.hml),
-                                 cumulative_rf=np.cumprod(1 + ff4_monthly.rf),
-                                 cumulative_mom=np.cumprod(1 + ff4_monthly.mom),
-                                 cumulative_ewff=np.cumprod(1 + ff4_monthly.ewff))
-ff5 = ft.read_dataframe("ff5.feather")
-ff5["dt"] = pd.to_datetime(ff5["dt"])
-ff5 = ff5.rename(columns={"dt": "date"})
-ff5["date"] = ff5.agg({"date": [end_of_month]})
-ff5_monthly = ff5.groupby(["date"]).apply(lambda x: pd.Series({"mkt_rf": (x.mkt_rf+1).prod()-1,
-                                                               "smb": (x.smb+1).prod()-1,
-                                                               "hml": (x.hml+1).prod()-1,
-                                                               "rf": (x.rf+1).prod()-1,
-                                                               "rmw": (x.rmw+1).prod()-1,
-                                                               "cma": (x.cma+1).prod()-1}))
-ff5_monthly["ewff"] = (ff5_monthly.mkt_rf + ff5_monthly.smb + ff5_monthly.hml + ff5_monthly.rmw + ff5_monthly.cma)/5
-ff5_monthly.reset_index(inplace=True)
-ff5_monthly = ff5_monthly.assign(cumulative_mkt_rf=np.cumprod(1 + ff5_monthly.mkt_rf),
-                                 cumulative_smb=np.cumprod(1 + ff5_monthly.smb),
-                                 cumulative_hml=np.cumprod(1 + ff5_monthly.hml),
-                                 cumulative_rf=np.cumprod(1 + ff5_monthly.rf),
-                                 cumulative_rmw=np.cumprod(1 + ff5_monthly.rmw),
-                                 cumulative_cma=np.cumprod(1 + ff5_monthly.cma),
-                                 cumulative_ewff=np.cumprod(1 + ff5_monthly.ewff))
-# merge mse and msf
-data = pd.merge(msf, mse, how="left", on=["permno", "date"])
-data["mcap"] = data["prc"] * data["shrout"]
-data = data >> arrange(X.permno, X.date)
-# fill na with distcd if the stock has distcd before so that we can identify stock that pay dividend
-# and stock that don't pay
-data["distcd"] = data.groupby(["permno"])["distcd"].transform(lambda x: x.fillna(method="ffill"))
-# take out the first two digit of the dist code which represent what kind of dividend is pay during the distrubtion
-data["divtype"] = [i if i != i else str(i)[2] for i in data["distcd"]]
-# take out the thrid digit of the dist code which represent the how often a company pay dividend
-data["disttype"] = [i if i != i else str(i)[:2] for i in data["distcd"]]
-
-# create lag variable
-
-data = data.assign(div_lag3=data.groupby(["permno"])["divamt"].shift(3),
-                   div_lag6=data.groupby(["permno"])["divamt"].shift(6),
-                   div_lag12=data.groupby(["permno"])["divamt"].shift(12),
-                   div_lag1=data.groupby(["permno"])["divamt"].shift(1),
-                   div_lag4=data.groupby(["permno"])["divamt"].shift(4),
-                   div_lag7=data.groupby(["permno"])["divamt"].shift(7),
-                   div_lag10=data.groupby(["permno"])["divamt"].shift(10),
-                   div_lag13=data.groupby(["permno"])["divamt"].shift(13),
-                   prc_lag=data.groupby("permno")["prc"].shift(1),
-                   mcap_lag=data.groupby(["permno"])["mcap"].shift(1))
-
-data = data >> arrange(X.permno, X.month)
-# assign a variable which indicated whether it has pay dividend in the pass 12 months
-data["distcd_lag"] = data.groupby(["permno", "month"])["distcd"].shift(1)
-# data set with stock that pay div and stock that don;t pay (divtype = nan)
-data = data.query('date <= "2011-12-31" &'
-                  'shrcd in([10,11]) &'
-                  'hexcd in([1,2,3]) &'
-                  'prc_lag >= 5 &'
-                  'mcap_lag == mcap_lag &'
-                  'ret == ret &'
-                  'mcap_lag > 0 &'
-                  'ret not in(["B","C"])')
-
-data['turnover'] = data['vol']/data['shrout']
-data['spread_2'] = data['ask'] - data['bid']
-data["ret"] = data.ret.apply(float)
-
-# table 1
-"""
-regular_div = data.query('divtype == divtype')
-table1_first_part = regular_div[["mcap", "spread_2", "permno","turnover"]].describe()
-table1_first_part = table1_first_part.transpose()
-table1_second_part = pd.DataFrame([[len(regular_div), "", "", "", "", "", "", ""],
-                                  [len(set(regular_div.permno)), "", "", "", "", "", "", ""]],
-                                  columns=list(table1_first_part))
-table1_second_part = table1_second_part.rename(index={0: "Number of Firms months",
-                                                      1: "Number of Firms"})
-table1 = pd.concat((table1_first_part, table1_second_part), axis=0)
-table1 = table1.rename(index={0: "Number of Firm Month", 1: "Number of Firm"},
-                       columns={"count": "N"})
-"""
-# create a portfilio which strategy is long-short within company
-# filter out stock that did not give dividend
-portfilio1_data = data.query('disttype == disttype & '
-                             'date > "1927-12-31" &'
-                             'disttype == "12"  & '
-                             'divtype in(["0","1","3","4","5"]) &'
-                             'distcd_lag == distcd_lag')
-
-portfilio1 = portfilio1_data
-# assign signal
-portfilio1["signal"] = np.where(((portfilio1.div_lag3.notna()) & (portfilio1.divtype.isin(["0", "1", "3"]))) |
-                                ((portfilio1.div_lag6.notna()) & (portfilio1.divtype == "4")) |
-                                ((portfilio1.div_lag12.notna()) & (portfilio1.divtype == "5")), "L",
-                                np.where(((portfilio1.div_lag3.isna()) & (portfilio1.divtype.isin(["0", "1", "3"]))) |
-                                         ((portfilio1.div_lag6.isna()) & (portfilio1.divtype == "4")) |
-                                         ((portfilio1.div_lag12.isna()) & (portfilio1.divtype == "5")),
-                                         "S", ""))
-portfilio1 = portfilio1.groupby(["date", "signal"]).apply(lambda x: pd.Series({"vwret": weighted_average(x),
-                                                                               "ewret": x.ret.mean()}))
-portfilio1.reset_index(inplace=True)
-portfilio1 = portfilio1.query('signal in(["L","S"])').groupby("date").apply(
-                          lambda x : pd.Series({"ewret": sum(np.where(x.signal == "L", x.ewret, x.ewret*-0.5)),
-                                                "vwret": sum(np.where(x.signal == "L", x.vwret, x.vwret*-0.5))}))
-portfilio1 = portfilio1.assign(cumulative_ewret=np.cumprod(1 + portfilio1.ewret),
-                               cumulative_vwret=np.cumprod(1 + portfilio1.vwret))
-# plot graph of equal weight and value weight cumulative return
-x = portfilio1.index
-y_ewret = np.log2(portfilio1.cumulative_ewret)
-y_vwret = np.log2(portfilio1.cumulative_vwret)
-plt.plot(x, y_ewret, color='red')
-plt.plot(x, y_vwret, color="blue")
-plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return"])
-plt.show()
-# run a regression againist Fama French 4 factors
-portfilio1_ff4 = pd.merge(portfilio1, ff4_monthly, on=["date"], how="inner")
-model1_ewret_ff4 = sm.OLS.from_formula('ewret~mkt_rf + smb + hml + mom', data=portfilio1_ff4).fit()
-print(model1_ewret_ff4.summary())
-model1_vwret_ff4 = sm.OLS.from_formula('vwret~mkt_rf + smb + hml + mom', data=portfilio1_ff4).fit()
-print(model1_vwret_ff4.summary())
-# plot graph between two strategies plus benchmark
+def regression_and_plot(portfilio):
+    """
+     :param portfilio: portfilio that need to be run the regression and plot graph
+     :return: run the regression for the input portfilio on Fama French 4 factors and 5 factors on equal weight return
+     and value weight return , then plot the comparsion return comparsion graph as well as the graph compare Fama French
+     4 and 5 factors equal weight cumulative return as well as smb and hml factor cumulative return, then return a tuble
+     which contain the regression paramaters for each regression with the following order: equal weight return
+     on Fama French 4 factors, value weight return on Fama French 4 factors, equal weight return on Fama French 5 factors
+     and lastly value weight return on Fama French 5 factors
+     """
+    # run regression on Fama French four factors
+    portfilio_ff4 = pd.merge(portfilio, ff4_monthly, on=["date"], how="inner")
+    # equal weight return against Fama French four factors
+    model_ewret_ff4 = sm.OLS.from_formula('ewret~mkt_rf + smb + hml + mom', data=portfilio_ff4).fit()
+    print(model_ewret_ff4.summary())
+    ewret_ff4_params = model_ewret_ff4.params
+    # value weight return against Fama French four factors
+    model_vwret_ff4 = sm.OLS.from_formula('vwret~mkt_rf + smb + hml + mom', data=portfilio_ff4).fit()
+    print(model_vwret_ff4.summary())
+    vwret_ff4_params = model_vwret_ff4.params
+    # run regression on Fama French five factors
+    portfilio_1963 = portfilio.query('date > "1963-07-01"')
+    portfilio_1963 = portfilio_1963.assign(cumulative_ewret=np.cumprod(1 + portfilio_1963.ewret),
+                                           cumulative_vwret=np.cumprod(1 + portfilio_1963.vwret))
+    portfilio_ff5 = pd.merge(portfilio_1963, ff5_monthly, on=["date"], how="inner")
+    # equal weight return against Fama French five factors
+    model_ewret_ff5 = sm.OLS.from_formula('ewret~mkt_rf + smb + hml + rmw + cma', data=portfilio_ff5).fit()
+    print(model_ewret_ff5.summary())
+    ewret_ff5_params = model_ewret_ff5.params
+    # value weight return against Fama French five factors
+    model_vwret_ff5 = sm.OLS.from_formula('vwret~mkt_rf + smb + hml + rmw + cma', data=portfilio_ff5).fit()
+    print(model_vwret_ff5.summary())
+    vwret_ff5_params = model_vwret_ff5.params
+    # Comparsion of equal weight and value weight cummulative return
+    x = portfilio.index
+    y_ewret = portfilio.cumulative_ewret
+    y_vwret = portfilio.cumulative_vwret
+    plt.plot(x, y_ewret, color='red')
+    plt.plot(x, y_vwret, color="blue")
+    plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return"])
+    plt.ylabel("Cumulative Return", fontdict={"fontweight": "bold"})
+    plt.xlabel("Date", fontdict={"fontweight": "bold"})
+    plt.title("Comparsion of Equal Weight and Value Weight Cummulative Return",
+              fontdict={"fontstyle": "italic", "fontweight": "bold"})
+    plt.show()
+    plt.figure()
+    # Comparsion of equal weight and value weight cummulative return plus benchmark which is equal weighted
+    # Fama French four factors
+    x = portfilio_ff4.date
+    y_ewret = portfilio_ff4.cumulative_ewret
+    y_vwret = portfilio_ff4.cumulative_vwret
+    y_ewff = portfilio_ff4.cumulative_ewff
+    plt.plot(x, y_ewret, color='red')
+    plt.plot(x, y_vwret, color="blue")
+    plt.plot(x, y_ewff, color="gold")
+    plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return", "Benchmark"])
+    plt.ylabel("Cumulative Return", fontdict={"fontweight": "bold"})
+    plt.xlabel("Date", fontdict={"fontweight": "bold"})
+    plt.title("Comparsion of Equal Weight and Value Weight Cummulative Return Plus FF4 Benchmark",
+              fontdict={"fontstyle": "italic", "fontweight": "bold"})
+    plt.show()
+    plt.figure()
+    # Comparsion of equal weight and value weight cummulative return plus benchmark which is equal weighted
+    # Fama French four factors
+    x = portfilio_ff4.date
+    y_ewret = portfilio_ff4.cumulative_ewret
+    y_vwret = portfilio_ff4.cumulative_vwret
+    y_smb = portfilio_ff4.cumulative_smb
+    y_hml = portfilio_ff4.cumulative_hml
+    plt.plot(x, y_ewret, color='red')
+    plt.plot(x, y_vwret, color="blue")
+    plt.plot(x, y_smb, color="gold")
+    plt.plot(x, y_hml, color="black")
+    plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return", "SMB", "HML"])
+    plt.ylabel("Cumulative Return", fontdict={"fontweight": "bold"})
+    plt.xlabel("Date", fontdict={"fontweight": "bold"})
+    plt.title("Comparsion of Equal Weight and Value Weight Cummulative Return plus SML and HML Factors ",
+              fontdict={"fontstyle": "italic", "fontweight": "bold"})
+    plt.show()
+    plt.figure()
+    # Comparsion of equal weight and value weight cummulative return plus benchmark which is equal weighted
+    # Fama French five factors
+    x = portfilio_ff5.date
+    y_ewret = portfilio_ff5.cumulative_ewret
+    y_vwret = portfilio_ff5.cumulative_vwret
+    y_ewff = portfilio_ff5.cumulative_ewff
+    plt.plot(x, y_ewret, color='red')
+    plt.plot(x, y_vwret, color="blue")
+    plt.plot(x, y_ewff, color="gold")
+    plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return", "Benchmark"])
+    plt.ylabel("Cumulative Return", fontdict={"fontweight": "bold"})
+    plt.xlabel("Date", fontdict={"fontweight": "bold"})
+    plt.title("Comparsion of Equal Weight and Value Weight Cummulative Return Plus FF5 Benchmark",
+              fontdict={"fontstyle": "italic", "fontweight": "bold"})
+    plt.show()
+    return ewret_ff4_params, vwret_ff4_params, ewret_ff5_params, vwret_ff5_params
 
 
-# run a regression againist Fama French 5 factors
-portfilio1_ff5 = pd.merge(portfilio1, ff5_monthly, on=["date"], how="inner")
-model1_ewret_ff5 = sm.OLS.from_formula('ewret~mkt_rf + smb + hml + rmw + cma', data=portfilio1_ff5).fit()
-print(model1_ewret_ff5.summary())
-model1_vwret_ff5 = sm.OLS.from_formula('vwret~mkt_rf + smb + hml + rmw + cma', data=portfilio1_ff5).fit()
-print(model1_ewret_ff5.summary())
+if __name__ == '__main__':
+    # sherry code should insert right below this
 
-# create a portfilio which strategy is long_short between companies
-portfilio2_data = data.query('date > "1927-12-31"')
+    # import Fama French 4 factors
+    ff4 = ft.read_dataframe("ff_four_factor.feather")
+    ff4 = ff4.iloc[1:]
+    ff4["dt"] = pd.to_datetime(ff4["dt"])
+    ff4 = ff4.rename(columns={"dt": "date"})
+    ff4["date"] = ff4.agg({"date": [end_of_month]})
+    # convert the daily file to monthly file by cumulating return on each day base on thier year and month
+    ff4_monthly = ff4.groupby(["date"]).apply(lambda x: pd.Series({"mkt_rf": (x.mkt_rf+1).prod()-1,
+                                                                   "smb": (x.SMB+1).prod()-1,
+                                                                   "hml": (x.HML+1).prod()-1,
+                                                                   "rf": (x.RF+1).prod()-1,
+                                                                   "mom": (x.Mom+1).prod()-1}))
 
-portfilio2 = portfilio2_data
-portfilio2["signal"] = np.where(((portfilio2.div_lag3.notna()) & (portfilio2.divtype.isin(["0", "1", "3"]))) |
-                                ((portfilio2.div_lag6.notna()) & (portfilio2.divtype == "4")) |
-                                ((portfilio2.div_lag12.notna()) & (portfilio2.divtype == "5")), "L",
-                                "S")
+    ff4_monthly["ewff"] = (ff4_monthly.mkt_rf + ff4_monthly.smb + ff4_monthly.hml + ff4_monthly.mom)/4
+    ff4_monthly.reset_index(inplace=True)
+    # convert the daily file to monthly file by cumulating return on each day base on thier year and month
+    ff4_monthly = ff4_monthly.assign(cumulative_mkt_rf=np.cumprod(1 + ff4_monthly.mkt_rf),
+                                     cumulative_smb=np.cumprod(1 + ff4_monthly.smb),
+                                     cumulative_hml=np.cumprod(1 + ff4_monthly.hml),
+                                     cumulative_rf=np.cumprod(1 + ff4_monthly.rf),
+                                     cumulative_mom=np.cumprod(1 + ff4_monthly.mom),
+                                     cumulative_ewff=np.cumprod(1 + ff4_monthly.ewff))
+    # import Fama French 5 factors dataset
+    ff5 = ft.read_dataframe("ff5.feather")
+    ff5["dt"] = pd.to_datetime(ff5["dt"])
+    ff5 = ff5.rename(columns={"dt": "date"})
+    ff5["date"] = ff5.agg({"date": [end_of_month]})
+    # convert the daily file to monthly file by cumulating return on each day base on thier year and month
+    ff5_monthly = ff5.groupby(["date"]).apply(lambda x: pd.Series({"mkt_rf": (x.mkt_rf+1).prod()-1,
+                                                                   "smb": (x.smb+1).prod()-1,
+                                                                   "hml": (x.hml+1).prod()-1,
+                                                                   "rf": (x.rf+1).prod()-1,
+                                                                   "rmw": (x.rmw+1).prod()-1,
+                                                                   "cma": (x.cma+1).prod()-1}))
+    # create a benchmark which equal weight all five factors of Fama French 5 factos
+    ff5_monthly["ewff"] = (ff5_monthly.mkt_rf + ff5_monthly.smb + ff5_monthly.hml + ff5_monthly.rmw + ff5_monthly.cma)/5
+    ff5_monthly.reset_index(inplace=True)
+    # create a cumulative return over time for all factos plus benchmark
+    ff5_monthly = ff5_monthly.assign(cumulative_mkt_rf=np.cumprod(1 + ff5_monthly.mkt_rf),
+                                     cumulative_smb=np.cumprod(1 + ff5_monthly.smb),
+                                     cumulative_hml=np.cumprod(1 + ff5_monthly.hml),
+                                     cumulative_rf=np.cumprod(1 + ff5_monthly.rf),
+                                     cumulative_rmw=np.cumprod(1 + ff5_monthly.rmw),
+                                     cumulative_cma=np.cumprod(1 + ff5_monthly.cma),
+                                     cumulative_ewff=np.cumprod(1 + ff5_monthly.ewff))
+    # this data should be modify after sherry code import and the code until the next comment might need additional
+    # adjustment after sherry code implement in this one
+    data = pd.read_csv("dataUse.csv")
+    data["date"] = pd.to_datetime(data["date"])
+    # take out the first two digit of the dist code which represent what kind of dividend is pay during the distrubtion
+    data["divtype"] = [i if i != i else str(i)[2] for i in data["freq"]]
+    # take out the thrid digit of the dist code which represent the how often a company pay dividend
+    data["disttype"] = [i if i != i else str(i)[:2] for i in data["freq"]]
+    # create a portfilio which strategy is long-short within company
+    data = data.assign(prc_lag=data.groupby("permno")["prc"].shift(1),
+                       mcap_lag=data.groupby(["permno"])["mcap"].shift(1))
+    # filter out stock that did not give dividend
+    portfilio1_data = data.query('freq == freq & '
+                                 'disttype == "12" &'
+                                 'divtype in(["0","1","3","4","5"])')
+    portfilio1 = portfilio1_data
+    # assign signal
+    portfilio1["signal"] = np.where((portfilio1.div_lag3.notna() | portfilio1.div_lag6.notna() |
+                                     portfilio1.div_lag9.notna() | portfilio1.div_lag12.notna()), "L",
+                                    np.where(portfilio1.div_lag1.notna() | portfilio1.div_lag2.notna() |
+                                             portfilio1.div_lag4.notna() | portfilio1.div_lag5.notna() |
+                                             portfilio1.div_lag7.notna() | portfilio1.div_lag8.notna() |
+                                             portfilio1.div_lag10.notna() | portfilio1.div_lag11.notna(), "S", ""))
+    # calculate the equal weight mean and value weight mean return base on each month and signal
+    portfilio1 = portfilio1.groupby(["date", "signal"]).apply(lambda x: pd.Series({"vwret": weighted_average(x),
+                                                                                   "ewret": x.ret.mean()}))
+    portfilio1.reset_index(inplace=True)
+    # calculate the total return of equal weight and value weight if we long and short each month
+    portfilio1 = portfilio1.query('signal in(["L","S"])').groupby("date").apply(
+                              lambda x: pd.Series({"ewret": sum(np.where(x.signal == "L", x.ewret, x.ewret*-1)),
+                                                   "vwret": sum(np.where(x.signal == "L", x.vwret, x.vwret*-1))}))
+    # calculate the cumulative return over time for equal weight and value weight
+    portfilio1 = portfilio1.assign(cumulative_ewret=np.cumprod(1 + portfilio1.ewret),
+                                   cumulative_vwret=np.cumprod(1 + portfilio1.vwret))
+    # plot comparsion graphs and run regression against Fama French four factos and five factors on portfilio1
+    # and return a tuple which contains all regression paramaters
+    regression_result1 = regression_and_plot(portfilio1)
+    # create a portfilio which strategy is long_short between companies
+    # using the orignal data as the portfilio2 data since we are shorting everything that is not long
+    portfilio2_data = data
+    portfilio2 = portfilio2_data
+    # assign signal
+    portfilio2["signal"] = np.where((portfilio2.div_lag3.notna() | portfilio2.div_lag6.notna() |
+                                     portfilio2.div_lag9.notna() | portfilio2.div_lag12.notna()), "L", "S")
+    # calculate the equal weight mean and value weight mean return base on each month and signal
+    portfilio2 = portfilio2.groupby(["date", "signal"]).apply(lambda x: pd.Series({"vwret": weighted_average(x),
+                                                                                   "ewret": x.ret.mean()}))
+    portfilio2.reset_index(inplace=True)
+    # calculate the total return of equal weight and value weight if we long and short each month
+    portfilio2 = portfilio2.query('signal in(["L","S"])').groupby("date").apply(
+                              lambda x : pd.Series({"ewret": sum(np.where(x.signal == "L", x.ewret, x.ewret*-1)),
+                                                    "vwret": sum(np.where(x.signal == "L", x.vwret, x.vwret*-1))}))
+    # calculate the cumulative return over time for equal weight and value weight
+    portfilio2 = portfilio2.assign(cumulative_ewret=np.cumprod(1 + portfilio2.ewret),
+                                   cumulative_vwret=np.cumprod(1 + portfilio2.vwret))
+    # plot comparsion graphs and run regression against Fama French four factos and five factors on portfilio2
+    # and return a tuple which contains all regression paramaters
+    regression_result2 = regression_and_plot(portfilio2)
+    # create portfilio which strategy short month after predicted dividend
+    # fiter out stock that do not pay dividend
+    portfilio3_data = data.query('disttype == disttype & '
+                                 'disttype == "12"  & '
+                                 'divtype in(["0","1","3","4","5"])')
+    portfilio3 = portfilio3_data
+    # assign signal
+    portfilio3["signal"] = np.where((portfilio3.div_lag3.notna() | portfilio3.div_lag6.notna() |
+                                     portfilio3.div_lag9.notna() | portfilio3.div_lag12.notna()), "L",
+                                    np.where((portfilio3.div_lag4.notna() | portfilio3.div_lag1.notna() |
+                                              portfilio3.div_lag7.notna() | portfilio3.div_lag10.notna()), "S", ""))
+    # calculate the equal weight mean and value weight mean return base on each month and signal
+    portfilio3 = portfilio3.groupby(["date", "signal"]).apply(lambda x: pd.Series({"vwret": weighted_average(x),
+                                                                                   "ewret": x.ret.mean()}))
+    portfilio3.reset_index(inplace=True)
+    # calculate the total return of equal weight and value weight if we long and short each month
+    portfilio3 = portfilio3.query('signal in(["L","S"])').groupby("date").apply(
+                              lambda x : pd.Series({"ewret": sum(np.where(x.signal == "L", x.ewret, x.ewret*-1)),
+                                                    "vwret": sum(np.where(x.signal == "L", x.vwret, x.vwret*-1))}))
+    # calculate the cumulative return over time for equal weight and value weight
+    portfilio3 = portfilio3.assign(cumulative_ewret=np.cumprod(1 + portfilio3.ewret),
+                                   cumulative_vwret=np.cumprod(1 + portfilio3.vwret))
+    # plot comparsion graphs and run regression against Fama French four factos and five factors on portfilio1
+    # and return a tuple which contains all regression paramaters
+    regression_result3 = regression_and_plot(portfilio3)
 
-portfilio2 = portfilio2.groupby(["date", "signal"]).apply(lambda x: pd.Series({"vwret": weighted_average(x),
-                                                                               "ewret": x.ret.mean()}))
-portfilio2.reset_index(inplace=True)
-portfilio2 = portfilio2.query('signal in(["L","S"])').groupby("date").apply(
-                          lambda x : pd.Series({"ewret": sum(np.where(x.signal == "L", x.ewret, x.ewret*-0.5)),
-                                                "vwret": sum(np.where(x.signal == "L", x.vwret, x.vwret*-0.5))}))
-portfilio2 = portfilio1.assign(cumulative_ewret=np.cumprod(1 + portfilio2.ewret),
-                               cumulative_vwret=np.cumprod(1 + portfilio2.vwret))
-# plot graph of equal weight and value weight cumulative return
-x = portfilio2.index
-y_ewret = np.log2(portfilio2.cumulative_ewret)
-y_ewret = np.log2(portfilio2.cumulative_vwret)
-plt.plot(x, y_ewret, color='red')
-plt.plot(x, y_ewret, color="blue")
-plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return"])
-plt.show()
 
-
-# create portfilio which strategy short month after predicted dividend
-portfilio3_data = data.query('disttype == disttype & '
-                             'date > "1927-12-31" &'
-                             'disttype == "12"  & '
-                             'divtype in(["0","1","3","4","5"])')
-
-portfilio3 = portfilio3_data
-# assign signal
-portfilio3["signal"] = np.where(((portfilio3.div_lag3.notna()) & (portfilio3.divtype.isin(["0", "1", "3"]))) |
-                                ((portfilio3.div_lag6.notna()) & (portfilio3.divtype == "4")) |
-                                ((portfilio3.div_lag12.notna()) & (portfilio3.divtype == "5")), "L",
-                                np.where(((portfilio3.div_lag4.notna()) & (portfilio3.divtype.isin(["0", "1", "3"]))) |
-                                         ((portfilio3.div_lag7.notna()) & (portfilio3.divtype == "4")) |
-                                         ((portfilio3.div_lag13.notna()) & (portfilio3.divtype == "5")),
-                                         "S", ""))
-portfilio3 = portfilio3.groupby(["date", "signal"]).apply(lambda x: pd.Series({"vwret": weighted_average(x),
-                                                                               "ewret": x.ret.mean()}))
-portfilio3.reset_index(inplace=True)
-portfilio3 = portfilio3.query('signal in(["L","S"])').groupby("date").apply(
-                          lambda x : pd.Series({"ewret": sum(np.where(x.signal == "L", x.ewret, x.ewret*-0.5)),
-                                                "vwret": sum(np.where(x.signal == "L", x.vwret, x.vwret*-0.5))}))
-portfilio3 = portfilio3.assign(cumulative_ewret=np.cumprod(1 + portfilio3.ewret),
-                               cumulative_vwret=np.cumprod(1 + portfilio3.vwret))
-# plot graph of equal weight and value weight cumulative return
-x = portfilio3.index
-y1 = np.log2(portfilio3.cumulative_ewret)
-y2 = np.log2(portfilio3.cumulative_vwret)
-plt.plot(x, y1, color='red')
-plt.plot(x, y2, color="blue")
-plt.legend(["Equal Weight Cumulative Return", "Value Weight Cumulative Return"])
-plt.show()
 
 
 
